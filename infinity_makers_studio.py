@@ -13,7 +13,6 @@ import sys
 import math
 from datetime import datetime
 from pathlib import Path
-import numpy as np
 
 # ── Configuração global do tema ──────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
