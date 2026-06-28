@@ -363,18 +363,58 @@ TEMPLATES = {
 
 class Preview3D:
     """
-    Exibe preview do modelo renderizado pelo OpenSCAD como PNG.
+    Preview 3D via OpenSCAD PNG com navegação por ângulos.
+    Botões giram a câmera e o PNG é cacheado por ângulo.
     """
     W, H = 360, 220
 
-    def __init__(self, master):
-        self._master = master
-        self._photo  = None
+    # Passo de rotação por clique (graus)
+    ROT_STEP = 30
+    TILT_STEP = 15
 
+    def __init__(self, master):
+        self._master  = master
+        self._photo   = None
+        self._scad    = None   # Path do SCAD atual
+        self._oscad   = None   # executável OpenSCAD
+        self._cache   = {}     # (rot_z, rot_x) -> Path do PNG
+
+        # Ângulo inicial — vista isométrica
+        self._rot_z = 35
+        self._rot_x = 55
+        self._dist  = 300
+
+        # ── Imagem
         self._img_label = ctk.CTkLabel(master, text="", fg_color="transparent")
+
+        # ── Canvas (hint / loading)
         self._canvas = Canvas(master, width=self.W, height=self.H,
                               bg="#111318", highlightthickness=0)
+
+        # ── Barra de controles
+        self._ctrl = ctk.CTkFrame(master, fg_color=BG_CARD, corner_radius=0, height=32)
+        self._ctrl.pack(side="bottom", fill="x")
+        self._ctrl.pack_propagate(False)
+
+        btn_s = dict(width=32, height=26, corner_radius=4,
+                     fg_color="transparent", hover_color=BORDER,
+                     text_color=ACCENT, font=("Segoe UI", 13, "bold"))
+
+        ctk.CTkButton(self._ctrl, text="↑", command=self._tilt_up,   **btn_s).pack(side="left",  padx=(8,1), pady=3)
+        ctk.CTkButton(self._ctrl, text="↓", command=self._tilt_down, **btn_s).pack(side="left",  padx=1,     pady=3)
+        ctk.CTkButton(self._ctrl, text="⟲", command=self._rot_left,  **btn_s).pack(side="left",  padx=(8,1), pady=3)
+        ctk.CTkButton(self._ctrl, text="⟳", command=self._rot_right, **btn_s).pack(side="left",  padx=1,     pady=3)
+        ctk.CTkButton(self._ctrl, text="🔍+", command=self._zoom_in,  **btn_s).pack(side="left",  padx=(8,1), pady=3)
+        ctk.CTkButton(self._ctrl, text="🔍−", command=self._zoom_out, **btn_s).pack(side="left",  padx=1,     pady=3)
+        ctk.CTkButton(self._ctrl, text="⟳ Reset", width=60,
+                      command=self._reset_view,
+                      corner_radius=4, fg_color="transparent",
+                      hover_color=BORDER, text_color=TEXT_SEC,
+                      font=FONTS["small"]).pack(side="right", padx=8, pady=3)
+
         self._show_hint()
+
+    # ── Exibição ──────────────────────────────────────────────────────────────
 
     def _show_hint(self):
         self._img_label.pack_forget()
@@ -391,8 +431,9 @@ class Preview3D:
         self._canvas.delete("all")
         self._canvas.create_text(
             self.W // 2, self.H // 2,
-            text="\u23f3 Renderizando preview...",
+            text="⏳ Renderizando...",
             fill="#7A7F99", font=("Segoe UI", 11), justify="center")
+        self._master.update_idletasks()
 
     def _show_image(self, png_path):
         try:
@@ -410,29 +451,39 @@ class Preview3D:
             self._img_label.configure(image=self._photo, text="")
             self._img_label.pack(fill="both", expand=True)
         except Exception:
-            self._canvas.pack(fill="both", expand=True)
-            self._img_label.pack_forget()
+            pass
 
-    def update(self, params: dict, scad_path=None):
-        if scad_path is None or not scad_path.exists():
+    # ── Renderização ──────────────────────────────────────────────────────────
+
+    def _render(self):
+        if not self._scad or not self._scad.exists():
             return
-        oscad = find_openscad()
+        oscad = self._oscad or find_openscad()
         if not oscad:
             return
+        self._oscad = oscad
+
+        key = (self._rot_z, self._rot_x, self._dist)
+        if key in self._cache and self._cache[key].exists():
+            self._show_image(self._cache[key])
+            return
+
         self._show_loading()
-        self._master.update_idletasks()
-        png_path = scad_path.with_suffix(".png")
+
+        png_path = self._scad.parent / f"preview_{self._rot_z}_{self._rot_x}_{self._dist}.png"
         try:
+            camera = f"0,0,0,{self._rot_x},0,{self._rot_z},{self._dist}"
             result = subprocess.run(
                 [oscad,
                  "--preview",
                  "--colorscheme=DeepOcean",
-                 "--camera=0,0,0,55,0,35,300",
+                 f"--camera={camera}",
                  "--imgsize=720,520",
                  "-o", str(png_path),
-                 str(scad_path)],
+                 str(self._scad)],
                 capture_output=True, timeout=60)
             if result.returncode == 0 and png_path.exists():
+                self._cache[key] = png_path
                 self._show_image(png_path)
             else:
                 self._canvas.pack(fill="both", expand=True)
@@ -441,7 +492,50 @@ class Preview3D:
             self._canvas.pack(fill="both", expand=True)
             self._img_label.pack_forget()
 
+    # ── Controles ─────────────────────────────────────────────────────────────
+
+    def _rot_left(self):
+        self._rot_z = (self._rot_z - self.ROT_STEP) % 360
+        self._render()
+
+    def _rot_right(self):
+        self._rot_z = (self._rot_z + self.ROT_STEP) % 360
+        self._render()
+
+    def _tilt_up(self):
+        self._rot_x = min(self._rot_x + self.TILT_STEP, 89)
+        self._render()
+
+    def _tilt_down(self):
+        self._rot_x = max(self._rot_x - self.TILT_STEP, 5)
+        self._render()
+
+    def _zoom_in(self):
+        self._dist = max(self._dist - 50, 50)
+        self._render()
+
+    def _zoom_out(self):
+        self._dist = min(self._dist + 50, 800)
+        self._render()
+
+    def _reset_view(self):
+        self._rot_z = 35
+        self._rot_x = 55
+        self._dist  = 300
+        self._render()
+
+    # ── API pública ───────────────────────────────────────────────────────────
+
+    def update(self, params: dict, scad_path=None):
+        if scad_path is None or not scad_path.exists():
+            return
+        # Novo modelo — limpa cache
+        self._scad  = scad_path
+        self._cache = {}
+        self._render()
+
 # ── Interface ─────────────────────────────────────────────────────────────────
+
 
 class StatusBar(ctk.CTkFrame):
     def __init__(self, master):
@@ -741,7 +835,7 @@ class App(ctk.CTk):
 
         preview_card = ctk.CTkFrame(preview_wrap, fg_color=BG_DEEP,
                                     corner_radius=8, border_color=BORDER, border_width=1,
-                                    height=220)
+                                    height=260)
         preview_card.pack(fill="x", padx=14, pady=(0, 10))
         preview_card.pack_propagate(False)
         self.preview = Preview3D(preview_card)
