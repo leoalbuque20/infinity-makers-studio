@@ -365,7 +365,7 @@ class Preview3D:
     """
     Exibe preview do modelo renderizado pelo OpenSCAD como PNG.
     """
-    W, H = 360, 260
+    W, H = 360, 220
 
     def __init__(self, master):
         self._master = master
@@ -736,12 +736,14 @@ class App(ctk.CTk):
         hdr.pack(fill="x", padx=14, pady=(10, 4))
         ctk.CTkLabel(hdr, text="PREVIEW 3D", font=FONTS["badge"],
                      text_color=TEXT_SEC, anchor="w").pack(side="left")
-        ctk.CTkLabel(hdr, text="arraste para girar",
+        ctk.CTkLabel(hdr, text="renderizado pelo OpenSCAD",
                      font=FONTS["small"], text_color=BORDER, anchor="e").pack(side="right")
 
         preview_card = ctk.CTkFrame(preview_wrap, fg_color=BG_DEEP,
-                                    corner_radius=8, border_color=BORDER, border_width=1)
+                                    corner_radius=8, border_color=BORDER, border_width=1,
+                                    height=220)
         preview_card.pack(fill="x", padx=14, pady=(0, 10))
+        preview_card.pack_propagate(False)
         self.preview = Preview3D(preview_card)
 
         # Log de saída
