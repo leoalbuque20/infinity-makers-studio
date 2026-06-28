@@ -1,7 +1,5 @@
 @echo off
 :: Infinity Makers Studio — Empacotador Windows
-:: Execute este arquivo para gerar o .exe na pasta dist\
-
 echo.
 echo ============================================
 echo   Infinity Makers Studio — Build para .exe
@@ -18,31 +16,29 @@ if %ERRORLEVEL% NEQ 0 (
 
 :: Instalar dependencias
 echo [1/3] Instalando dependencias...
-pip install customtkinter pyinstaller Pillow --quiet
+python -m pip install customtkinter Pillow pyinstaller --quiet
 if %ERRORLEVEL% NEQ 0 (
     echo [ERRO] Falha ao instalar dependencias.
     pause
     exit /b 1
 )
 
-:: Empacotar
+:: Localizar customtkinter
 echo [2/3] Empacotando com PyInstaller...
-pyinstaller ^
+for /f "delims=" %%i in ('python -c "import customtkinter, os; print(os.path.dirname(customtkinter.__file__))"') do set CTK_PATH=%%i
+
+:: Empacotar usando python -m pyinstaller (funciona mesmo sem pyinstaller no PATH)
+python -m PyInstaller ^
     --onefile ^
     --windowed ^
     --name "InfinityMakersStudio" ^
-    --add-data "%LocalAppData%\Programs\Python\Python312\Lib\site-packages\customtkinter;customtkinter" ^
+    --add-data "%CTK_PATH%;customtkinter" ^
     infinity_makers_studio.py
 
 if %ERRORLEVEL% NEQ 0 (
-    :: Tentar caminho alternativo do customtkinter
-    for /f "delims=" %%i in ('python -c "import customtkinter, os; print(os.path.dirname(customtkinter.__file__))"') do set CTK_PATH=%%i
-    pyinstaller ^
-        --onefile ^
-        --windowed ^
-        --name "InfinityMakersStudio" ^
-        --add-data "%CTK_PATH%;customtkinter" ^
-        infinity_makers_studio.py
+    echo [ERRO] Falha ao empacotar.
+    pause
+    exit /b 1
 )
 
 echo [3/3] Pronto!
