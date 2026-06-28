@@ -374,7 +374,7 @@ class Preview3D:
                              bg="#111318", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         self._drag_x = self._drag_y = 0
-        self._rot_x = 25.0   # graus
+        self._rot_x = 55.0   # graus — vista levemente de cima
         self._rot_z = 35.0
         self._params = None
         self.canvas.bind("<ButtonPress-1>",   self._on_press)
@@ -461,14 +461,19 @@ class Preview3D:
         cz, sz = math.cos(rz), math.sin(rz)
         proj = []
         for (x, y, z) in verts:
-            # Rotação Z
+            # Rotação em Z (gira no plano XY)
             x2 = x * cz - y * sz
             y2 = x * sz + y * cz
-            # Rotação X
+            # Rotação em X (inclina para frente/trás)
             y3 = y2 * cx - z * sx
             z3 = y2 * sx + z * cx
             proj.append((x2, y3, z3))
         return proj
+
+    def _to_screen(self, proj, scale, cx, cy):
+        """Converte ponto 3D projetado para coordenadas de tela."""
+        # Usa x2 horizontal e combina y3+z3 para profundidade vertical
+        return [(cx + p[0] * scale, cy - p[2] * scale) for p in proj]
 
     def _redraw(self):
         if not self._params:
@@ -499,27 +504,36 @@ class Preview3D:
             else:
                 all_geo = [self._make_cylinder(r, h, fn=32)]
 
-        # Escala automática
+        # Escala automática — considera largura e altura separadamente
         all_verts = [v for geo in all_geo for v in geo[0]]
         if not all_verts:
             return
-        max_dim = max(
-            max(abs(v[0]) for v in all_verts),
-            max(abs(v[1]) for v in all_verts),
-            max(abs(v[2]) for v in all_verts), 1)
-        scale = min(self.W, self.H) * 0.35 / max_dim
-        cx, cy = self.W // 2, self.H // 2
+
+        # Centralizar modelo em torno do centro de massa
+        cx_m = sum(v[0] for v in all_verts) / len(all_verts)
+        cy_m = sum(v[1] for v in all_verts) / len(all_verts)
+        cz_m = sum(v[2] for v in all_verts) / len(all_verts)
+        all_geo_c = []
+        for verts, faces in all_geo:
+            verts_c = [(x - cx_m, y - cy_m, z - cz_m) for x, y, z in verts]
+            all_geo_c.append((verts_c, faces))
+
+        all_verts_c = [v for geo in all_geo_c for v in geo[0]]
+        max_dim = max(max(abs(v[i]) for v in all_verts_c) for i in range(3))
+        max_dim = max(max_dim, 1)
+        scale = min(self.W, self.H) * 0.38 / max_dim
+        scx, scy = self.W // 2, self.H // 2
 
         self.canvas.delete("all")
 
         # Coletar e ordenar faces por profundidade
         draw_list = []
-        for verts, faces in all_geo:
+        for verts, faces in all_geo_c:
             proj = self._project(verts)
             for idx_list, color in faces:
                 pts = [proj[i] for i in idx_list]
-                depth = sum(p2[2] for p2 in pts) / len(pts)
-                screen = [(cx + p2[0]*scale, cy - p2[2]*scale) for p2 in pts]
+                depth = sum(p2[1] for p2 in pts) / len(pts)
+                screen = [(scx + p2[0]*scale, scy - p2[2]*scale) for p2 in pts]
                 draw_list.append((depth, screen, color))
 
         draw_list.sort(key=lambda x: x[0])
