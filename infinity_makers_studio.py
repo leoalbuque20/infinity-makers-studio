@@ -10,7 +10,6 @@ import shutil
 import os
 import re
 import sys
-import math
 from datetime import datetime
 from pathlib import Path
 
@@ -364,190 +363,83 @@ TEMPLATES = {
 
 class Preview3D:
     """
-    Renderiza um preview 3D isométrico simples usando tkinter Canvas.
-    Suporta placa, chaveiro e luminária com parâmetros básicos.
+    Exibe preview do modelo renderizado pelo OpenSCAD como PNG.
     """
     W, H = 360, 260
 
     def __init__(self, master):
-        self.canvas = Canvas(master, width=self.W, height=self.H,
-                             bg="#111318", highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True)
-        self._drag_x = self._drag_y = 0
-        self._rot_x = 55.0   # graus — vista levemente de cima
-        self._rot_z = 35.0
-        self._params = None
-        self.canvas.bind("<ButtonPress-1>",   self._on_press)
-        self.canvas.bind("<B1-Motion>",       self._on_drag)
-        self.canvas.bind("<MouseWheel>",      self._on_scroll)
-        self.canvas.bind("<Button-4>",        self._on_scroll)
-        self.canvas.bind("<Button-5>",        self._on_scroll)
-        self._draw_hint()
+        self._master = master
+        self._photo  = None
 
-    def _draw_hint(self):
-        self.canvas.delete("all")
-        self.canvas.create_text(self.W//2, self.H//2,
-                                text="Preview 3D\nclique em Gerar SCAD\npara visualizar",
-                                fill="#3A3F55", font=("Segoe UI", 11), justify="center")
+        self._img_label = ctk.CTkLabel(master, text="", fg_color="transparent")
+        self._canvas = Canvas(master, width=self.W, height=self.H,
+                              bg="#111318", highlightthickness=0)
+        self._show_hint()
 
-    def update(self, params: dict):
-        self._params = params
-        self._redraw()
+    def _show_hint(self):
+        self._img_label.pack_forget()
+        self._canvas.pack(fill="both", expand=True)
+        self._canvas.delete("all")
+        self._canvas.create_text(
+            self.W // 2, self.H // 2,
+            text="Preview 3D\nclique em Gerar SCAD\npara visualizar",
+            fill="#3A3F55", font=("Segoe UI", 11), justify="center")
 
-    def _on_press(self, e):
-        self._drag_x, self._drag_y = e.x, e.y
+    def _show_loading(self):
+        self._img_label.pack_forget()
+        self._canvas.pack(fill="both", expand=True)
+        self._canvas.delete("all")
+        self._canvas.create_text(
+            self.W // 2, self.H // 2,
+            text="\u23f3 Renderizando preview...",
+            fill="#7A7F99", font=("Segoe UI", 11), justify="center")
 
-    def _on_drag(self, e):
-        dx = e.x - self._drag_x
-        dy = e.y - self._drag_y
-        self._rot_z += dx * 0.5
-        self._rot_x += dy * 0.5
-        self._drag_x, self._drag_y = e.x, e.y
-        self._redraw()
+    def _show_image(self, png_path):
+        try:
+            from PIL import Image, ImageTk
+            img = Image.open(png_path).convert("RGB")
+            bbox = img.getbbox()
+            if bbox:
+                img = img.crop(bbox)
+            img.thumbnail((self.W, self.H), Image.LANCZOS)
+            bg = Image.new("RGB", (self.W, self.H), "#111318")
+            offset = ((self.W - img.width) // 2, (self.H - img.height) // 2)
+            bg.paste(img, offset)
+            self._photo = ImageTk.PhotoImage(bg)
+            self._canvas.pack_forget()
+            self._img_label.configure(image=self._photo, text="")
+            self._img_label.pack(fill="both", expand=True)
+        except Exception:
+            self._canvas.pack(fill="both", expand=True)
+            self._img_label.pack_forget()
 
-    def _on_scroll(self, e):
-        if hasattr(e, 'delta') and e.delta:
-            self._rot_z += e.delta * 0.1
-        elif e.num == 4:
-            self._rot_z += 5
-        else:
-            self._rot_z -= 5
-        self._redraw()
-
-    # ── Geração de faces ──────────────────────────────────────────────────────
-
-    def _make_box(self, w, h, d):
-        """Retorna lista de (verts, cor) para um box centrado em Z=d/2."""
-        x, y, z = w/2, h/2, d
-        verts = [
-            (-x,-y,0),(x,-y,0),(x,y,0),(-x,y,0),   # base
-            (-x,-y,z),(x,-y,z),(x,y,z),(-x,y,z),   # topo
-        ]
-        faces = [
-            ([4,5,6,7], "#F5A623"),   # topo — accent
-            ([0,1,5,4], "#8B5E10"),   # frente
-            ([1,2,6,5], "#C07A0A"),   # direita
-            ([3,2,6,7], "#8B5E10"),   # atrás
-            ([0,3,7,4], "#7A4A00"),   # esquerda
-        ]
-        return verts, faces
-
-    def _make_cylinder(self, r, h, fn=18):
-        """Retorna (verts, faces) para cilindro centrado em Z=h/2."""
-        verts = []
-        for ring in [0, h]:
-            for i in range(fn):
-                a = 2 * math.pi * i / fn
-                verts.append((r * math.cos(a), r * math.sin(a), ring))
-        faces = []
-        # Tampa superior
-        top = list(range(fn, fn*2))
-        faces.append((top, "#F5A623"))
-        # Laterais
-        for i in range(fn):
-            j = (i+1) % fn
-            faces.append(([i, j, j+fn, i+fn], "#C07A0A"))
-        return verts, faces
-
-    def _make_hex(self, r, h):
-        return self._make_cylinder(r, h, fn=6)
-
-    # ── Projeção e desenho ────────────────────────────────────────────────────
-
-    def _project(self, verts):
-        rx = math.radians(self._rot_x)
-        rz = math.radians(self._rot_z)
-        cx, sx = math.cos(rx), math.sin(rx)
-        cz, sz = math.cos(rz), math.sin(rz)
-        proj = []
-        for (x, y, z) in verts:
-            # Rotação em Z (gira no plano XY)
-            x2 = x * cz - y * sz
-            y2 = x * sz + y * cz
-            # Rotação em X (inclina para frente/trás)
-            y3 = y2 * cx - z * sx
-            z3 = y2 * sx + z * cx
-            proj.append((x2, y3, z3))
-        return proj
-
-    def _to_screen(self, proj, scale, cx, cy):
-        """Converte ponto 3D projetado para coordenadas de tela."""
-        # Usa x2 horizontal e combina y3+z3 para profundidade vertical
-        return [(cx + p[0] * scale, cy - p[2] * scale) for p in proj]
-
-    def _redraw(self):
-        if not self._params:
+    def update(self, params: dict, scad_path=None):
+        if scad_path is None or not scad_path.exists():
             return
-        p = self._params
-        t = p["type"]
-
-        # Construir geometria
-        if t == "Placa":
-            w, h, d = p["width"], p["height"], p["thick"] + p["text_h"]
-            all_geo = [self._make_box(w, h, d)]
-        elif t == "Chaveiro":
-            w, h, d = p["width"], p["height"], p["thick"] + p["text_h"]
-            ring_r = p.get("ring_r", 8)
-            vb, fb = self._make_box(w, h, d)
-            # argola: cilindro deslocado
-            vc, fc = self._make_cylinder(ring_r, d, fn=24)
-            ox = -w/2 - ring_r
-            vc = [(x+ox, y, z) for x,y,z in vc]
-            all_geo = [(vb, fb), (vc, fc)]
-        else:  # Luminária
-            r, h = p["width"], p["height"]
-            shape = p.get("lamp_shape", "Cilíndrica")
-            if shape == "Hexagonal":
-                all_geo = [self._make_hex(r, h)]
-            elif shape == "Quadrada":
-                all_geo = [self._make_box(r*2, r*2, h)]
+        oscad = find_openscad()
+        if not oscad:
+            return
+        self._show_loading()
+        self._master.update_idletasks()
+        png_path = scad_path.with_suffix(".png")
+        try:
+            result = subprocess.run(
+                [oscad,
+                 "--preview",
+                 "--colorscheme=DeepOcean",
+                 "--camera=0,0,0,55,0,35,300",
+                 "--imgsize=720,520",
+                 "-o", str(png_path),
+                 str(scad_path)],
+                capture_output=True, timeout=60)
+            if result.returncode == 0 and png_path.exists():
+                self._show_image(png_path)
             else:
-                all_geo = [self._make_cylinder(r, h, fn=32)]
-
-        # Escala automática — considera largura e altura separadamente
-        all_verts = [v for geo in all_geo for v in geo[0]]
-        if not all_verts:
-            return
-
-        # Centralizar modelo em torno do centro de massa
-        cx_m = sum(v[0] for v in all_verts) / len(all_verts)
-        cy_m = sum(v[1] for v in all_verts) / len(all_verts)
-        cz_m = sum(v[2] for v in all_verts) / len(all_verts)
-        all_geo_c = []
-        for verts, faces in all_geo:
-            verts_c = [(x - cx_m, y - cy_m, z - cz_m) for x, y, z in verts]
-            all_geo_c.append((verts_c, faces))
-
-        all_verts_c = [v for geo in all_geo_c for v in geo[0]]
-        max_dim = max(max(abs(v[i]) for v in all_verts_c) for i in range(3))
-        max_dim = max(max_dim, 1)
-        scale = min(self.W, self.H) * 0.38 / max_dim
-        scx, scy = self.W // 2, self.H // 2
-
-        self.canvas.delete("all")
-
-        # Coletar e ordenar faces por profundidade
-        draw_list = []
-        for verts, faces in all_geo_c:
-            proj = self._project(verts)
-            for idx_list, color in faces:
-                pts = [proj[i] for i in idx_list]
-                depth = sum(p2[1] for p2 in pts) / len(pts)
-                screen = [(scx + p2[0]*scale, scy - p2[2]*scale) for p2 in pts]
-                draw_list.append((depth, screen, color))
-
-        draw_list.sort(key=lambda x: x[0])
-
-        for _, screen, color in draw_list:
-            flat = [c for pt in screen for c in pt]
-            if len(flat) >= 6:
-                self.canvas.create_polygon(flat, fill=color,
-                                           outline="#1A1D26", width=1)
-
-        # Label
-        self.canvas.create_text(self.W//2, self.H - 14,
-                                text="arraste para girar",
-                                fill="#3A3F55", font=("Segoe UI", 8))
+                self._canvas.pack(fill="both", expand=True)
+                self._img_label.pack_forget()
+        except Exception:
+            self._canvas.pack(fill="both", expand=True)
+            self._img_label.pack_forget()
 
 # ── Interface ─────────────────────────────────────────────────────────────────
 
@@ -1025,7 +917,7 @@ class App(ctk.CTk):
             path = self._save_scad(p)
             self._log(f"✔ SCAD gerado:\n    {path}")
             self.status_bar.set(f"✔  SCAD salvo em exports/", SUCCESS)
-            self.preview.update(p)
+            self.preview.update(p, scad_path=path)
         except Exception as e:
             self._log(f"✘ Erro: {e}")
             self.status_bar.set(f"✘  Erro ao gerar SCAD", ERROR_CLR)
