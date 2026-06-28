@@ -4,14 +4,16 @@ Gerador de modelos 3D para impressoras FDM — placas, chaveiros e luminárias.
 """
 
 import customtkinter as ctk
-from tkinter import messagebox
+from tkinter import messagebox, Canvas
 import subprocess
 import shutil
 import os
 import re
 import sys
+import math
 from datetime import datetime
 from pathlib import Path
+import numpy as np
 
 # ── Configuração global do tema ──────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -56,7 +58,8 @@ module rounded_cube(w, h, d, r) {{
 }}"""
 
 def gen_plate(text, font, width, height, thickness, text_h,
-              corner_r, hole, hole_pos, double_hole, hole_margin, hole_radius, border):
+              corner_r, hole, hole_pos, double_hole, hole_margin, hole_radius, border,
+              align="center"):
     safe_text = _scad_str(text)
     safe_font = _scad_str(font)
     corners = _scad_corners(corner_r)
@@ -120,6 +123,42 @@ def gen_plate(text, font, width, height, thickness, text_h,
             cube([{width - border*2}, {height - border*2}, {border + 0.2}], center=true);
     }}"""
 
+    # Múltiplas linhas de texto
+    lines = [l for l in text.split("\n") if l.strip()]
+    font_size = f"min({width},{height}) * 0.22"
+
+    # Mapeamento de alinhamento para OpenSCAD
+    halign_map = {"left": "left", "center": "center", "right": "right"}
+    halign = halign_map.get(align, "center")
+    # Offset X para alinhamento
+    if align == "left":
+        tx = f"-{width}/2 + {width}*0.05"
+    elif align == "right":
+        tx = f"{width}/2 - {width}*0.05"
+    else:
+        tx = "0"
+
+    if len(lines) <= 1:
+        text_code = f"""
+    translate([{tx}, 0, {thickness}])
+        linear_extrude(height={text_h})
+            text("{_scad_str(lines[0] if lines else text)}",
+                 size={font_size},
+                 font="{safe_font}",
+                 halign="{halign}", valign="center");"""
+    else:
+        n = len(lines)
+        text_code = ""
+        for i, line in enumerate(lines):
+            offset = f"(min({width},{height}) * 0.22 * 1.4) * ({(n-1)/2:.2f} - {i})"
+            text_code += f"""
+    translate([{tx}, {offset}, {thickness}])
+        linear_extrude(height={text_h})
+            text("{_scad_str(line)}",
+                 size={font_size},
+                 font="{safe_font}",
+                 halign="{halign}", valign="center");"""
+
     return f"""// Infinity Makers Studio — Placa decorativa
 // Gerado em: {datetime.now().strftime("%Y-%m-%d %H:%M")}
 {corners}
@@ -132,18 +171,13 @@ module placa() {{
     }}
 {border_code}
     // Texto em relevo
-    translate([0, 0, {thickness}])
-        linear_extrude(height={text_h})
-            text("{safe_text}",
-                 size=min({width},{height}) * 0.22,
-                 font="{safe_font}",
-                 halign="center", valign="center");
+{text_code}
 }}
 
 placa();
 """
 
-def gen_keychain(text, font, width, height, thickness, text_h, corner_r, ring_r):
+def gen_keychain(text, font, width, height, thickness, text_h, corner_r, ring_r, align="center"):
     safe_text = _scad_str(text)
     safe_font = _scad_str(font)
     corners = _scad_corners(corner_r)
@@ -152,6 +186,31 @@ def gen_keychain(text, font, width, height, thickness, text_h, corner_r, ring_r)
         body_shape = f"rounded_cube({width}, {height}, {thickness}, {corner_r});"
     else:
         body_shape = f"cube([{width}, {height}, {thickness}], center=true);"
+
+    halign_map = {"left": "left", "center": "center", "right": "right"}
+    halign = halign_map.get(align, "center")
+    tx = f"-{width}/2 + {width}*0.05" if align == "left" else (f"{width}/2 - {width}*0.05" if align == "right" else "0")
+    lines = [l for l in text.split("\n") if l.strip()]
+    if len(lines) <= 1:
+        text_lines = f"""
+        translate([{tx}, 0, {thickness}])
+            linear_extrude(height={text_h})
+                text("{safe_text}",
+                     size=min({width},{height}) * 0.24,
+                     font="{safe_font}",
+                     halign="{halign}", valign="center");"""
+    else:
+        n = len(lines)
+        text_lines = ""
+        for i, line in enumerate(lines):
+            offset = f"(min({width},{height}) * 0.24 * 1.4) * ({(n-1)/2:.2f} - {i})"
+            text_lines += f"""
+        translate([{tx}, {offset}, {thickness}])
+            linear_extrude(height={text_h})
+                text("{_scad_str(line)}",
+                     size=min({width},{height}) * 0.24,
+                     font="{safe_font}",
+                     halign="{halign}", valign="center");"""
 
     return f"""// Infinity Makers Studio — Chaveiro
 // Gerado em: {datetime.now().strftime("%Y-%m-%d %H:%M")}
@@ -172,12 +231,7 @@ module chaveiro() {{
                 cylinder(h={thickness + 4}, r={ring_r * 0.45:.1f}, center=true, $fn=48);
         }}
         // Texto em relevo
-        translate([0, 0, {thickness}])
-            linear_extrude(height={text_h})
-                text("{safe_text}",
-                     size=min({width},{height}) * 0.24,
-                     font="{safe_font}",
-                     halign="center", valign="center");
+{text_lines}
     }}
 }}
 
@@ -240,6 +294,247 @@ def find_openscad() -> str | None:
         if os.path.isfile(p):
             return p
     return None
+
+# ── Templates pré-definidos ───────────────────────────────────────────────────
+
+TEMPLATES = {
+    "— Nenhum —": None,
+    "🏠  Residencial": {
+        "type": "Placa", "text": "Casa\nFamília Silva",
+        "font": "Liberation Sans:style=Bold",
+        "width": 120, "height": 40, "thick": 4, "text_h": 2,
+        "corner": 6, "border": 2, "hole": True, "double_hole": True,
+        "hole_pos": "Superior", "hole_margin": 8, "hole_radius": 3,
+        "align": "center",
+    },
+    "🏢  Comercial": {
+        "type": "Placa", "text": "GR Soluções\nTecnologia",
+        "font": "Liberation Sans:style=Bold",
+        "width": 150, "height": 50, "thick": 5, "text_h": 3,
+        "corner": 4, "border": 3, "hole": True, "double_hole": True,
+        "hole_pos": "Superior", "hole_margin": 10, "hole_radius": 4,
+        "align": "center",
+    },
+    "🔑  Chaveiro Nome": {
+        "type": "Chaveiro", "text": "Leonardo",
+        "font": "Liberation Sans:style=Bold",
+        "width": 65, "height": 28, "thick": 4, "text_h": 2,
+        "corner": 4, "ring_r": 7,
+        "align": "center",
+    },
+    "🔑  Chaveiro Duplo": {
+        "type": "Chaveiro", "text": "Infinity\nMakers",
+        "font": "Liberation Sans:style=Bold",
+        "width": 65, "height": 35, "thick": 4, "text_h": 2,
+        "corner": 4, "ring_r": 7,
+        "align": "center",
+    },
+    "💡  Luminária Cilíndrica": {
+        "type": "Luminária", "text": "Studio",
+        "font": "Liberation Sans:style=Bold",
+        "width": 45, "height": 130, "thick": 2, "text_h": 2,
+        "lamp_shape": "Cilíndrica",
+        "align": "center",
+    },
+    "💡  Luminária Hexagonal": {
+        "type": "Luminária", "text": "Makers",
+        "font": "Liberation Sans:style=Bold",
+        "width": 40, "height": 120, "thick": 2, "text_h": 2,
+        "lamp_shape": "Hexagonal",
+        "align": "center",
+    },
+    "🪧  Placa Rústica": {
+        "type": "Placa", "text": "Bem-vindo",
+        "font": "Times New Roman:style=Bold",
+        "width": 110, "height": 45, "thick": 6, "text_h": 3,
+        "corner": 0, "border": 4, "hole": True, "double_hole": False,
+        "hole_pos": "Superior", "hole_margin": 8, "hole_radius": 4,
+        "align": "center",
+    },
+    "🔲  Placa Minimalista": {
+        "type": "Placa", "text": "STUDIO",
+        "font": "Liberation Mono:style=Bold",
+        "width": 100, "height": 30, "thick": 3, "text_h": 1,
+        "corner": 0, "border": 0, "hole": False, "double_hole": False,
+        "hole_pos": "Superior", "hole_margin": 8, "hole_radius": 3,
+        "align": "center",
+    },
+}
+
+
+
+class Preview3D:
+    """
+    Renderiza um preview 3D isométrico simples usando tkinter Canvas.
+    Suporta placa, chaveiro e luminária com parâmetros básicos.
+    """
+    W, H = 360, 260
+
+    def __init__(self, master):
+        self.canvas = Canvas(master, width=self.W, height=self.H,
+                             bg="#111318", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+        self._drag_x = self._drag_y = 0
+        self._rot_x = 25.0   # graus
+        self._rot_z = 35.0
+        self._params = None
+        self.canvas.bind("<ButtonPress-1>",   self._on_press)
+        self.canvas.bind("<B1-Motion>",       self._on_drag)
+        self.canvas.bind("<MouseWheel>",      self._on_scroll)
+        self.canvas.bind("<Button-4>",        self._on_scroll)
+        self.canvas.bind("<Button-5>",        self._on_scroll)
+        self._draw_hint()
+
+    def _draw_hint(self):
+        self.canvas.delete("all")
+        self.canvas.create_text(self.W//2, self.H//2,
+                                text="Preview 3D\nclique em Gerar SCAD\npara visualizar",
+                                fill="#3A3F55", font=("Segoe UI", 11), justify="center")
+
+    def update(self, params: dict):
+        self._params = params
+        self._redraw()
+
+    def _on_press(self, e):
+        self._drag_x, self._drag_y = e.x, e.y
+
+    def _on_drag(self, e):
+        dx = e.x - self._drag_x
+        dy = e.y - self._drag_y
+        self._rot_z += dx * 0.5
+        self._rot_x += dy * 0.5
+        self._drag_x, self._drag_y = e.x, e.y
+        self._redraw()
+
+    def _on_scroll(self, e):
+        if hasattr(e, 'delta') and e.delta:
+            self._rot_z += e.delta * 0.1
+        elif e.num == 4:
+            self._rot_z += 5
+        else:
+            self._rot_z -= 5
+        self._redraw()
+
+    # ── Geração de faces ──────────────────────────────────────────────────────
+
+    def _make_box(self, w, h, d):
+        """Retorna lista de (verts, cor) para um box centrado em Z=d/2."""
+        x, y, z = w/2, h/2, d
+        verts = [
+            (-x,-y,0),(x,-y,0),(x,y,0),(-x,y,0),   # base
+            (-x,-y,z),(x,-y,z),(x,y,z),(-x,y,z),   # topo
+        ]
+        faces = [
+            ([4,5,6,7], "#F5A623"),   # topo — accent
+            ([0,1,5,4], "#8B5E10"),   # frente
+            ([1,2,6,5], "#C07A0A"),   # direita
+            ([3,2,6,7], "#8B5E10"),   # atrás
+            ([0,3,7,4], "#7A4A00"),   # esquerda
+        ]
+        return verts, faces
+
+    def _make_cylinder(self, r, h, fn=18):
+        """Retorna (verts, faces) para cilindro centrado em Z=h/2."""
+        verts = []
+        for ring in [0, h]:
+            for i in range(fn):
+                a = 2 * math.pi * i / fn
+                verts.append((r * math.cos(a), r * math.sin(a), ring))
+        faces = []
+        # Tampa superior
+        top = list(range(fn, fn*2))
+        faces.append((top, "#F5A623"))
+        # Laterais
+        for i in range(fn):
+            j = (i+1) % fn
+            faces.append(([i, j, j+fn, i+fn], "#C07A0A"))
+        return verts, faces
+
+    def _make_hex(self, r, h):
+        return self._make_cylinder(r, h, fn=6)
+
+    # ── Projeção e desenho ────────────────────────────────────────────────────
+
+    def _project(self, verts):
+        rx = math.radians(self._rot_x)
+        rz = math.radians(self._rot_z)
+        cx, sx = math.cos(rx), math.sin(rx)
+        cz, sz = math.cos(rz), math.sin(rz)
+        proj = []
+        for (x, y, z) in verts:
+            # Rotação Z
+            x2 = x * cz - y * sz
+            y2 = x * sz + y * cz
+            # Rotação X
+            y3 = y2 * cx - z * sx
+            z3 = y2 * sx + z * cx
+            proj.append((x2, y3, z3))
+        return proj
+
+    def _redraw(self):
+        if not self._params:
+            return
+        p = self._params
+        t = p["type"]
+
+        # Construir geometria
+        if t == "Placa":
+            w, h, d = p["width"], p["height"], p["thick"] + p["text_h"]
+            all_geo = [self._make_box(w, h, d)]
+        elif t == "Chaveiro":
+            w, h, d = p["width"], p["height"], p["thick"] + p["text_h"]
+            ring_r = p.get("ring_r", 8)
+            vb, fb = self._make_box(w, h, d)
+            # argola: cilindro deslocado
+            vc, fc = self._make_cylinder(ring_r, d, fn=24)
+            ox = -w/2 - ring_r
+            vc = [(x+ox, y, z) for x,y,z in vc]
+            all_geo = [(vb, fb), (vc, fc)]
+        else:  # Luminária
+            r, h = p["width"], p["height"]
+            shape = p.get("lamp_shape", "Cilíndrica")
+            if shape == "Hexagonal":
+                all_geo = [self._make_hex(r, h)]
+            elif shape == "Quadrada":
+                all_geo = [self._make_box(r*2, r*2, h)]
+            else:
+                all_geo = [self._make_cylinder(r, h, fn=32)]
+
+        # Escala automática
+        all_verts = [v for geo in all_geo for v in geo[0]]
+        if not all_verts:
+            return
+        max_dim = max(
+            max(abs(v[0]) for v in all_verts),
+            max(abs(v[1]) for v in all_verts),
+            max(abs(v[2]) for v in all_verts), 1)
+        scale = min(self.W, self.H) * 0.35 / max_dim
+        cx, cy = self.W // 2, self.H // 2
+
+        self.canvas.delete("all")
+
+        # Coletar e ordenar faces por profundidade
+        draw_list = []
+        for verts, faces in all_geo:
+            proj = self._project(verts)
+            for idx_list, color in faces:
+                pts = [proj[i] for i in idx_list]
+                depth = sum(p2[2] for p2 in pts) / len(pts)
+                screen = [(cx + p2[0]*scale, cy - p2[2]*scale) for p2 in pts]
+                draw_list.append((depth, screen, color))
+
+        draw_list.sort(key=lambda x: x[0])
+
+        for _, screen, color in draw_list:
+            flat = [c for pt in screen for c in pt]
+            if len(flat) >= 6:
+                self.canvas.create_polygon(flat, fill=color,
+                                           outline="#1A1D26", width=1)
+
+        # Label
+        self.canvas.create_text(self.W//2, self.H - 14,
+                                text="arraste para girar",
+                                fill="#3A3F55", font=("Segoe UI", 8))
 
 # ── Interface ─────────────────────────────────────────────────────────────────
 
@@ -333,14 +628,40 @@ class App(ctk.CTk):
         self.model_type.set("Placa")
         self.model_type.pack(fill="x", padx=18, pady=(0, 12))
 
+        # ── Templates
+        SectionLabel(p, "Templates").pack(anchor="w", padx=18, pady=(18, 2))
+        self.template_var = ctk.StringVar(value="— Nenhum —")
+        ctk.CTkOptionMenu(
+            p, variable=self.template_var,
+            values=list(TEMPLATES.keys()),
+            fg_color=BG_CARD, button_color=ACCENT, button_hover_color=ACCENT_DIM,
+            text_color=TEXT_PRI, font=FONTS["body"],
+            command=self._on_template_change
+        ).pack(fill="x", padx=18, pady=(0, 12))
+
         # ── Texto
         SectionLabel(p, "Conteúdo").pack(anchor="w", padx=18, pady=(4, 2))
-        FieldLabel(p, "Texto").pack(anchor="w", padx=18)
-        self.txt_text = ctk.CTkEntry(p, placeholder_text="Seu texto aqui",
-                                      fg_color=BG_CARD, border_color=BORDER,
-                                      text_color=TEXT_PRI, font=FONTS["body"])
-        self.txt_text.insert(0, "Infinity Makers")
-        self.txt_text.pack(fill="x", padx=18, pady=(2, 8))
+        FieldLabel(p, "Texto (Enter para nova linha)").pack(anchor="w", padx=18)
+        self.txt_text = ctk.CTkTextbox(p, height=60,
+                                        fg_color=BG_CARD, border_color=BORDER,
+                                        border_width=1, text_color=TEXT_PRI,
+                                        font=FONTS["body"])
+        self.txt_text.insert("1.0", "Infinity Makers")
+        self.txt_text.pack(fill="x", padx=18, pady=(2, 6))
+
+        # Alinhamento
+        FieldLabel(p, "Alinhamento do texto").pack(anchor="w", padx=18)
+        self.align_var = ctk.StringVar(value="center")
+        align_btn = ctk.CTkSegmentedButton(
+            p, values=["⬅ Esq", "↔ Centro", "Dir ➡"],
+            fg_color=BG_CARD, selected_color=ACCENT,
+            selected_hover_color=ACCENT_DIM,
+            unselected_color=BG_CARD, unselected_hover_color=BORDER,
+            text_color=TEXT_PRI, font=FONTS["small"],
+            command=self._on_align_change)
+        align_btn.set("↔ Centro")
+        align_btn.pack(fill="x", padx=18, pady=(2, 10))
+        self._align_btn = align_btn
 
         FieldLabel(p, "Fonte OpenSCAD").pack(anchor="w", padx=18)
         self.font_var = ctk.StringVar(value="Liberation Sans:style=Bold")
@@ -472,7 +793,8 @@ class App(ctk.CTk):
     def _build_right(self, parent):
         parent.configure(fg_color="transparent")
         parent.rowconfigure(0, weight=0)
-        parent.rowconfigure(1, weight=1)
+        parent.rowconfigure(1, weight=0)
+        parent.rowconfigure(2, weight=1)
         parent.columnconfigure(0, weight=1)
 
         # Botões de ação
@@ -500,9 +822,26 @@ class App(ctk.CTk):
             fg_color=BG_CARD, hover_color=BORDER, text_color=TEXT_SEC,
             width=120, command=self._open_exports, **btn_cfg).pack(side="left", padx=8, pady=14)
 
+        # Preview 3D
+        preview_wrap = ctk.CTkFrame(parent, fg_color=BG_PANEL, corner_radius=0)
+        preview_wrap.grid(row=1, column=0, sticky="ew")
+        preview_wrap.columnconfigure(0, weight=1)
+
+        hdr = ctk.CTkFrame(preview_wrap, fg_color="transparent")
+        hdr.pack(fill="x", padx=14, pady=(10, 4))
+        ctk.CTkLabel(hdr, text="PREVIEW 3D", font=FONTS["badge"],
+                     text_color=TEXT_SEC, anchor="w").pack(side="left")
+        ctk.CTkLabel(hdr, text="arraste para girar",
+                     font=FONTS["small"], text_color=BORDER, anchor="e").pack(side="right")
+
+        preview_card = ctk.CTkFrame(preview_wrap, fg_color=BG_DEEP,
+                                    corner_radius=8, border_color=BORDER, border_width=1)
+        preview_card.pack(fill="x", padx=14, pady=(0, 10))
+        self.preview = Preview3D(preview_card)
+
         # Log de saída
         log_wrap = ctk.CTkFrame(parent, fg_color=BG_PANEL, corner_radius=0)
-        log_wrap.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+        log_wrap.grid(row=2, column=0, sticky="nsew", padx=0, pady=0)
         log_wrap.rowconfigure(1, weight=1)
         log_wrap.columnconfigure(0, weight=1)
 
@@ -528,6 +867,51 @@ class App(ctk.CTk):
                      anchor="w").pack(anchor="w", padx=8, pady=6)
 
     # ── Eventos ───────────────────────────────────────────────────────────────
+
+    def _on_align_change(self, value):
+        map_ = {"⬅ Esq": "left", "↔ Centro": "center", "Dir ➡": "right"}
+        self.align_var.set(map_.get(value, "center"))
+
+    def _on_template_change(self, name):
+        tpl = TEMPLATES.get(name)
+        if not tpl:
+            return
+        # Tipo
+        self.model_type.set(tpl["type"])
+        self._on_type_change(tpl["type"])
+        # Texto
+        self.txt_text.delete("1.0", "end")
+        self.txt_text.insert("1.0", tpl.get("text", ""))
+        # Fonte
+        if "font" in tpl:
+            self.font_var.set(tpl["font"])
+        # Alinhamento
+        align = tpl.get("align", "center")
+        self.align_var.set(align)
+        align_lbl = {"left": "⬅ Esq", "center": "↔ Centro", "right": "Dir ➡"}.get(align, "↔ Centro")
+        self._align_btn.set(align_lbl)
+        # Dimensões
+        if "width"  in tpl: self.spn_width.set(tpl["width"])
+        if "height" in tpl: self.spn_height.set(tpl["height"])
+        if "thick"  in tpl: self.spn_thick.set(tpl["thick"])
+        if "text_h" in tpl: self.spn_texth.set(tpl["text_h"])
+        # Placa
+        if tpl["type"] == "Placa":
+            if "corner"      in tpl: self.spn_corner.set(tpl["corner"])
+            if "border"      in tpl: self.spn_border.set(tpl["border"])
+            if "hole"        in tpl: self.hole_var.set(tpl["hole"])
+            if "double_hole" in tpl: self.double_hole_var.set(tpl["double_hole"])
+            if "hole_pos"    in tpl: self.hole_pos_var.set(tpl["hole_pos"])
+            if "hole_margin" in tpl: self.spn_hole_margin.set(tpl["hole_margin"])
+            if "hole_radius" in tpl: self.spn_hole_radius.set(tpl["hole_radius"])
+            self._on_hole_change()
+        # Chaveiro
+        elif tpl["type"] == "Chaveiro":
+            if "corner" in tpl: self.spn_key_corner.set(tpl["corner"])
+            if "ring_r" in tpl: self.spn_ring.set(tpl["ring_r"])
+        # Luminária
+        elif tpl["type"] == "Luminária":
+            if "lamp_shape" in tpl: self.lamp_shape_var.set(tpl["lamp_shape"])
 
     def _on_type_change(self, value):
         self.frame_plate.pack_forget()
@@ -572,8 +956,9 @@ class App(ctk.CTk):
     def _collect_params(self):
         return {
             "type":     self.model_type.get(),
-            "text":     self.txt_text.get().strip() or "Texto",
+            "text":     self.txt_text.get("1.0", "end").strip() or "Texto",
             "font":     self.font_var.get(),
+            "align":    self.align_var.get(),
             "width":    self.spn_width.get(),
             "height":   self.spn_height.get(),
             "thick":    self.spn_thick.get(),
@@ -596,10 +981,12 @@ class App(ctk.CTk):
             return gen_plate(p["text"], p["font"], p["width"], p["height"],
                              p["thick"], p["text_h"], p["corner"],
                              p["hole"], p["hole_pos"], p["double_hole"],
-                             p["hole_margin"], p["hole_radius"], p["border"])
+                             p["hole_margin"], p["hole_radius"], p["border"],
+                             p.get("align", "center"))
         elif t == "Chaveiro":
             return gen_keychain(p["text"], p["font"], p["width"], p["height"],
-                                p["thick"], p["text_h"], p["key_corner"], p["ring_r"])
+                                p["thick"], p["text_h"], p["key_corner"], p["ring_r"],
+                                p.get("align", "center"))
         else:
             return gen_lamp(p["text"], p["font"], p["width"], p["height"],
                             p["thick"], p["text_h"], p["lamp_shape"])
@@ -625,6 +1012,7 @@ class App(ctk.CTk):
             path = self._save_scad(p)
             self._log(f"✔ SCAD gerado:\n    {path}")
             self.status_bar.set(f"✔  SCAD salvo em exports/", SUCCESS)
+            self.preview.update(p)
         except Exception as e:
             self._log(f"✘ Erro: {e}")
             self.status_bar.set(f"✘  Erro ao gerar SCAD", ERROR_CLR)
